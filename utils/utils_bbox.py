@@ -9,7 +9,7 @@ class DecodeBox():
         self.anchors        = anchors
         self.num_classes    = num_classes
         self.bbox_attrs     = 5 + num_classes
-        self.input_shape    = input_shape
+        self.input_shape    = input_shape # 416,416
         #-----------------------------------------------------------#
         #   13x13的特征层对应的anchor是[116,90],[156,198],[373,326]
         #   26x26的特征层对应的anchor是[30,61],[62,45],[59,119]

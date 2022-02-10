@@ -69,7 +69,9 @@ if __name__ == "__main__":
     #   网络一般不从0开始训练，至少会使用主干部分的权值，有些论文提到可以不用预训练，主要原因是他们 数据集较大 且 调参能力优秀。
     #   如果一定要训练网络的主干部分，可以了解imagenet数据集，首先训练分类模型，分类模型的 主干部分 和该模型通用，基于此进行训练。
     #----------------------------------------------------------------------------------------------------------------------------#
-    model_path      = 'model_data/yolo_weights.pth'
+    #model_path      = 'model_data/yolo_weights.pth'
+    # 加载已经训练好的模型
+    model_path = 'model_data/ep003-loss6.292-val_loss5.600.pth'
     #------------------------------------------------------#
     #   输入的shape大小，一定要是32的倍数
     #------------------------------------------------------#
@@ -93,16 +95,16 @@ if __name__ == "__main__":
     #   占用的显存较小，仅对网络进行微调
     #----------------------------------------------------#
     Init_Epoch          = 0
-    Freeze_Epoch        = 50
-    Freeze_batch_size   = 8
+    Freeze_Epoch        = 0
+    Freeze_batch_size   = 32
     Freeze_lr           = 1e-3
     #----------------------------------------------------#
     #   解冻阶段训练参数
     #   此时模型的主干不被冻结了，特征提取网络会发生改变
     #   占用的显存较大，网络所有的参数都会发生改变
     #----------------------------------------------------#
-    UnFreeze_Epoch      = 100
-    Unfreeze_batch_size = 4
+    UnFreeze_Epoch      = 2
+    Unfreeze_batch_size = 16
     Unfreeze_lr         = 1e-4
     #------------------------------------------------------#
     #   是否进行冻结训练，默认先冻结主干训练后解冻训练。
@@ -113,7 +115,7 @@ if __name__ == "__main__":
     #   开启后会加快数据读取速度，但是会占用更多内存
     #   内存较小的电脑可以设置为2或者0  
     #------------------------------------------------------#
-    num_workers         = 4
+    num_workers         = 8
     #----------------------------------------------------#
     #   获得图片路径和标签
     #----------------------------------------------------#
@@ -144,6 +146,8 @@ if __name__ == "__main__":
         model_dict.update(pretrained_dict)
         model.load_state_dict(model_dict)
 
+    # 设置训练模式
+    # TODO: 直接将model.train()赋值,后面可能会重复调用model.train()
     model_train = model.train()
     if Cuda:
         model_train = torch.nn.DataParallel(model)
@@ -160,6 +164,7 @@ if __name__ == "__main__":
         train_lines = f.readlines()
     with open(val_annotation_path) as f:
         val_lines   = f.readlines()
+    # 训练集和验证机的数据总数
     num_train   = len(train_lines)
     num_val     = len(val_lines)
 
@@ -171,7 +176,7 @@ if __name__ == "__main__":
     #   UnFreeze_Epoch总训练世代
     #   提示OOM或者显存不足请调小Batch_size
     #------------------------------------------------------#
-    if True:
+    if False:
         batch_size  = Freeze_batch_size
         lr          = Freeze_lr
         start_epoch = Init_Epoch
@@ -184,6 +189,8 @@ if __name__ == "__main__":
             raise ValueError("数据集过小，无法进行训练，请扩充数据集。")
         
         optimizer       = optim.Adam(model_train.parameters(), lr, weight_decay = 5e-4)
+        # 随着训练eppoch次数的增多降低学习率
+        # new_lr=λ×initial_lr
         lr_scheduler    = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.94)
 
         train_dataset   = YoloDataset(train_lines, input_shape, num_classes, train = True)
@@ -196,6 +203,9 @@ if __name__ == "__main__":
         if Freeze_Train:
             for param in model.backbone.parameters():
                 param.requires_grad = False
+
+
+
 
         for epoch in range(start_epoch, end_epoch):
             fit_one_epoch(model_train, model, yolo_loss, loss_history, optimizer, epoch, 

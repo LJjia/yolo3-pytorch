@@ -3,6 +3,10 @@ from collections import OrderedDict
 
 import torch.nn as nn
 
+'''
+实现yolov3中darknet主骨干网络
+'''
+
 
 #---------------------------------------------------------------------#
 #   残差结构
@@ -10,13 +14,24 @@ import torch.nn as nn
 #   最后接上一个残差边
 #---------------------------------------------------------------------#
 class BasicBlock(nn.Module):
+    '''
+    dark的残差结构
+    '''
     def __init__(self, inplanes, planes):
+        '''
+        1x1和3x3卷积基本单元,通道数由inplanes->1x1->planes[0]->planes[1]
+        :param inplanes: 输入通道数,传入int
+        :param planes: 输出通道数,传入一个二维tuple,第一个元素为1x1输出,第二个元素为3x3输出
+        1x1为了升降维度
+        1x1输出不补齐,3x3输出补齐,因此1x1和3x3后,特征图大小不变
+        '''
         super(BasicBlock, self).__init__()
-        self.conv1  = nn.Conv2d(inplanes, planes[0], kernel_size=1, stride=1, padding=0, bias=False)
+        self.conv1  = nn.Conv2d(inplanes, planes[0], kernel_size=(1,1), stride=(1,1), padding=0, bias=False)
+        # BN输入参数为输入通道数量
         self.bn1    = nn.BatchNorm2d(planes[0])
         self.relu1  = nn.LeakyReLU(0.1)
         
-        self.conv2  = nn.Conv2d(planes[0], planes[1], kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv2  = nn.Conv2d(planes[0], planes[1], kernel_size=(3,3), stride=(1,1), padding=1, bias=False)
         self.bn2    = nn.BatchNorm2d(planes[1])
         self.relu2  = nn.LeakyReLU(0.1)
 
@@ -31,18 +46,32 @@ class BasicBlock(nn.Module):
         out = self.bn2(out)
         out = self.relu2(out)
 
+        # 值相加,并不是contact
         out += residual
         return out
 
 class DarkNet(nn.Module):
+    '''
+    定义darknet主骨干
+    整个网络缩放尺度32,因此图片分辨率为32的倍数都可以用来分析
+    416/32=13
+    '''
     def __init__(self, layers):
+        '''
+        传入残差块重复次数
+        :param layers:第几个残差块重复次数
+        '''
         super(DarkNet, self).__init__()
+        print("=====dark model init=====")
+        print("resuidal block ",layers)
         self.inplanes = 32
         # 416,416,3 -> 416,416,32
-        self.conv1  = nn.Conv2d(3, self.inplanes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv1  = nn.Conv2d(3, self.inplanes, kernel_size=(3,3), stride=(1,1), padding=1, bias=False)
         self.bn1    = nn.BatchNorm2d(self.inplanes)
         self.relu1  = nn.LeakyReLU(0.1)
 
+        # 对应layers 输入为 1 2 8 8 4
+        # 计算公式 (n-f+2p)/s+1
         # 416,416,32 -> 208,208,64
         self.layer1 = self._make_layer([32, 64], layers[0])
         # 208,208,64 -> 104,104,128
@@ -57,8 +86,10 @@ class DarkNet(nn.Module):
         self.layers_out_filters = [64, 128, 256, 512, 1024]
 
         # 进行权值初始化
+        # module会 递归 遍历所有子模块,就是说大模块一次,小模块又一次
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
+                # 计算聚卷积核输出尺度,并归一化,均值0,方差根号(2. / n)
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
                 m.weight.data.normal_(0, math.sqrt(2. / n))
             elif isinstance(m, nn.BatchNorm2d):
@@ -70,15 +101,24 @@ class DarkNet(nn.Module):
     #   然后进行残差结构的堆叠
     #---------------------------------------------------------------------#
     def _make_layer(self, planes, blocks):
+        '''
+        下采样+残差组合模块
+        :param planes:
+        :param blocks: 残差个数
+        :return:
+        '''
         layers = []
-        # 下采样，步长为2，卷积核大小为3
-        layers.append(("ds_conv", nn.Conv2d(self.inplanes, planes[1], kernel_size=3, stride=2, padding=1, bias=False)))
+        # 下面这三行表示下采样卷积，步长为2，卷积核大小为3
+        # planes=[32, 64] self.inplanes=32
+        # 计算公式 (n-f+2p)/s+1 输入416x416x32, 输出208x208x64
+        layers.append(("ds_conv", nn.Conv2d(self.inplanes, planes[1], kernel_size=(3,3), stride=(2,2), padding=1, bias=False)))
         layers.append(("ds_bn", nn.BatchNorm2d(planes[1])))
         layers.append(("ds_relu", nn.LeakyReLU(0.1)))
         # 加入残差结构
         self.inplanes = planes[1]
         for i in range(0, blocks):
             layers.append(("residual_{}".format(i), BasicBlock(self.inplanes, planes)))
+        # OrderedDict按照键插入顺序进行排序
         return nn.Sequential(OrderedDict(layers))
 
     def forward(self, x):
@@ -88,6 +128,7 @@ class DarkNet(nn.Module):
 
         x = self.layer1(x)
         x = self.layer2(x)
+        # 从256输出维度开始需要保存输出的数据
         out3 = self.layer3(x)
         out4 = self.layer4(out3)
         out5 = self.layer5(out4)
