@@ -28,7 +28,9 @@ class YOLO(object):
 
         # "model_path"        : 'model_data/yolo_weights.pth',
         # "classes_path": 'model_data/coco_classes.txt',
-        "model_path": 'model_data/ep002-loss5.479-val_loss5.134.pth',
+        # "model_path": 'model_data/ep002-loss5.479-val_loss5.134.pth',
+        # "model_path"        : 'model_data/yolo_weights.pth',
+        "model_path": 'model_data/ep005-loss5.601-val_loss5.038.pth',
         "classes_path"      : 'model_data/voc_classes.txt',
         #---------------------------------------------------------------------#
         #   anchors_path代表先验框对应的txt文件，一般不修改。
