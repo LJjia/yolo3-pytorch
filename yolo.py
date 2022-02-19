@@ -45,7 +45,7 @@ class YOLO(object):
         #---------------------------------------------------------------------#
         #   只有得分大于置信度的预测框会被保留下来
         #---------------------------------------------------------------------#
-        "confidence"        : 0.5,
+        "confidence"        : 0.2,
         #---------------------------------------------------------------------#
         #   非极大抑制所用到的nms_iou大小
         #---------------------------------------------------------------------#
@@ -92,6 +92,7 @@ class YOLO(object):
         hsv_tuples = [(x / self.num_classes, 1., 1.) for x in range(self.num_classes)]
         self.colors = list(map(lambda x: colorsys.hsv_to_rgb(*x), hsv_tuples))
         self.colors = list(map(lambda x: (int(x[0] * 255), int(x[1] * 255), int(x[2] * 255)), self.colors))
+        # 每个label对应生成一个三维数组
         self.generate()
 
     #---------------------------------------------------#
@@ -123,7 +124,7 @@ class YOLO(object):
         image       = cvtColor(image)
         #---------------------------------------------------------#
         #   给图像增加灰条，实现不失真的resize
-        #   也可以直接resize进行识别
+        #   也可以直接resize进行识别,这里是用直接resize成416x416的,会变形
         #---------------------------------------------------------#
         image_data  = resize_image(image, (self.input_shape[1],self.input_shape[0]), self.letterbox_image)
         #---------------------------------------------------------#
@@ -132,7 +133,7 @@ class YOLO(object):
         # 装置+添加维度
         # batch B R G
         image_data  = np.expand_dims(np.transpose(preprocess_input(np.array(image_data, dtype='float32')), (2, 0, 1)), 0)
-
+        # 1x3x416x416 维度
         with torch.no_grad():
             images = torch.from_numpy(image_data)
             if self.cuda:
@@ -141,6 +142,7 @@ class YOLO(object):
             #   将图像输入网络当中进行预测！
             #---------------------------------------------------------#
             outputs = self.net(images)
+            # output是3个特征图的输出 1x75x13x13 1x75x26x26 1x75x52x52 三个tensor组成的tuple
             outputs = self.bbox_util.decode_box(outputs)
             #---------------------------------------------------------#
             #   将预测框进行堆叠，然后进行非极大抑制
