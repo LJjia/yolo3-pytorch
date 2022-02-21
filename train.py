@@ -1,6 +1,7 @@
 #-------------------------------------#
 #       对数据集进行训练
 #-------------------------------------#
+import sys
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
@@ -69,9 +70,9 @@ if __name__ == "__main__":
     #   网络一般不从0开始训练，至少会使用主干部分的权值，有些论文提到可以不用预训练，主要原因是他们 数据集较大 且 调参能力优秀。
     #   如果一定要训练网络的主干部分，可以了解imagenet数据集，首先训练分类模型，分类模型的 主干部分 和该模型通用，基于此进行训练。
     #----------------------------------------------------------------------------------------------------------------------------#
-    #model_path      = 'model_data/yolo_weights.pth'
+    model_path      = 'model_data/yolo_weights.pth'
     # 加载已经训练好的模型
-    model_path = 'model_data/ep003-loss6.292-val_loss5.600.pth'
+    # model_path = 'model_data/ep003-loss6.292-val_loss5.600.pth'
     #------------------------------------------------------#
     #   输入的shape大小，一定要是32的倍数
     #------------------------------------------------------#
@@ -95,7 +96,7 @@ if __name__ == "__main__":
     #   占用的显存较小，仅对网络进行微调
     #----------------------------------------------------#
     Init_Epoch          = 0
-    Freeze_Epoch        = 0
+    Freeze_Epoch        = 5
     Freeze_batch_size   = 32
     Freeze_lr           = 1e-3
     #----------------------------------------------------#
@@ -103,7 +104,7 @@ if __name__ == "__main__":
     #   此时模型的主干不被冻结了，特征提取网络会发生改变
     #   占用的显存较大，网络所有的参数都会发生改变
     #----------------------------------------------------#
-    UnFreeze_Epoch      = 2
+    UnFreeze_Epoch      = 8
     Unfreeze_batch_size = 16
     Unfreeze_lr         = 1e-4
     #------------------------------------------------------#
@@ -132,7 +133,7 @@ if __name__ == "__main__":
     #   创建yolo模型
     #------------------------------------------------------#
     model = YoloBody(anchors_mask, num_classes, pretrained=pretrained)
-    if not pretrained:
+    if model_path == '' or not pretrained:
         weights_init(model)
     if model_path != '':
         #------------------------------------------------------#
@@ -142,8 +143,11 @@ if __name__ == "__main__":
         device          = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model_dict      = model.state_dict()
         pretrained_dict = torch.load(model_path, map_location = device)
+        # 比较对应名称的shape是否相同,相同则加入字典
         pretrained_dict = {k: v for k, v in pretrained_dict.items() if np.shape(model_dict[k]) == np.shape(v)}
+        print('len predict',len(pretrained_dict),'len model',len(model_dict))
         model_dict.update(pretrained_dict)
+        # 只会加载shape和原先匹配的层
         model.load_state_dict(model_dict)
 
     # 设置训练模式
@@ -153,6 +157,8 @@ if __name__ == "__main__":
         model_train = torch.nn.DataParallel(model)
         cudnn.benchmark = True
         model_train = model_train.cuda()
+        print("use cuda device")
+    print(model.parameters())
 
     yolo_loss    = YOLOLoss(anchors, num_classes, input_shape, Cuda, anchors_mask)
     loss_history = LossHistory("logs/")
@@ -176,7 +182,7 @@ if __name__ == "__main__":
     #   UnFreeze_Epoch总训练世代
     #   提示OOM或者显存不足请调小Batch_size
     #------------------------------------------------------#
-    if False:
+    if True:
         batch_size  = Freeze_batch_size
         lr          = Freeze_lr
         start_epoch = Init_Epoch
