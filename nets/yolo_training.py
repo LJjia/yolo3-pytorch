@@ -136,7 +136,7 @@ class YOLOLoss(nn.Module):
         #   获得网络应该有的预测结果
         #-----------------------------------------------#
         y_true, noobj_mask, box_loss_scale = self.get_target(l, targets, scaled_anchors, in_h, in_w)
-        # y_true尺度 8x3x13x13x25 表示真实框的预测结果
+        # y_true尺度 8x3x13x13x25 表示真实框的预测结果,xy外面有sigmoid
         # noobjmask 8x3x13x13 表示特征图上哪个框没有对应预测目标,为1为没有,0为发现目标
         # box_loss_scale 8x3x13x13 表示大目标loss权重小，小目标loss权重大,暂时不清楚
 
@@ -159,37 +159,40 @@ class YOLOLoss(nn.Module):
         #-----------------------------------------------------------#
         box_loss_scale = 2 - box_loss_scale
         #-----------------------------------------------------------#
-        #   计算中心偏移情况的loss，使用BCELoss效果好一些
+        #   计算中心偏移情况的loss，使用BCELoss效果好一些,注意,位置损失只有GT框所对应的anchor才会计算损失
+        #  每个GT对应一个anchor,大多数anchor都没有真实框对应
         #-----------------------------------------------------------#
+        # 注意,xy对应的是sigmoid值的BCE,而不是直接tx,ty的BCE
         loss_x = torch.sum(self.BCELoss(x, y_true[..., 0]) * box_loss_scale * y_true[..., 4])
         loss_y = torch.sum(self.BCELoss(y, y_true[..., 1]) * box_loss_scale * y_true[..., 4])
         #-----------------------------------------------------------#
-        #   计算宽高调整值的loss
+        #   计算宽高调整值的loss MSE
         #-----------------------------------------------------------#
+        # 注意,wh对应的是tw,th的MSE,而不是e^{tw}
         loss_w = torch.sum(self.MSELoss(w, y_true[..., 2]) * 0.5 * box_loss_scale * y_true[..., 4])
         loss_h = torch.sum(self.MSELoss(h, y_true[..., 3]) * 0.5 * box_loss_scale * y_true[..., 4])
         #-----------------------------------------------------------#
-        #   计算置信度的loss
+        #   计算置信度的loss,这个loss为:GT框个数*BCE+iou大于0.5的anchor数量*BCE
         #-----------------------------------------------------------#
         loss_conf   = torch.sum(self.BCELoss(conf, y_true[..., 4]) * y_true[..., 4]) + \
                       torch.sum(self.BCELoss(conf, y_true[..., 4]) * noobj_mask)
-
+        # 同样,也是只有GT框所对应的anchor才会计算分类损失
         loss_cls    = torch.sum(self.BCELoss(pred_cls[y_true[..., 4] == 1], y_true[..., 5:][y_true[..., 4] == 1]))
 
         loss        = loss_x  + loss_y + loss_w + loss_h + loss_conf + loss_cls
+        # num_pos每个batch中GT框的个数,求和后获得这个batch中gt框的个数
         num_pos = torch.sum(y_true[..., 4])
-        # TODO:num_pos是什么意思
         num_pos = torch.max(num_pos, torch.ones_like(num_pos))
         return loss, num_pos
 
     def calculate_iou(self, _box_a, _box_b):
         '''
 
-        :param _box_a:num_true_box, 4 每行前两个为0 后两个为右下角xy 表示为在特征图上的大小
-        :param _box_b:9, 4 每行前两个为0 后两个为先验框大小
-        :return:
+        :param _box_a:[num_true_box, 4] 每行前两个为0 后两个为gt wh大小
+        :param _box_b:[9, 4] 每行前两个为0 后两个为先验框wh大小
+        :return: [num_true_box,9] 表示每个真实框和对应先验框的交并比
         '''
-        # TODO:交并比这里算的比较奇怪,为什么会没有用到左上角坐标?只用到了右下角坐标
+        #
         #-----------------------------------------------------------#
         #   计算真实框的左上角和右下角
         #-----------------------------------------------------------#
@@ -220,9 +223,9 @@ class YOLOLoss(nn.Module):
         #-----------------------------------------------------------#
         max_xy  = torch.min(box_a[:, 2:].unsqueeze(1).expand(A, B, 2), box_b[:, 2:].unsqueeze(0).expand(A, B, 2))
         min_xy  = torch.max(box_a[:, :2].unsqueeze(1).expand(A, B, 2), box_b[:, :2].unsqueeze(0).expand(A, B, 2))
-        # 输入张量限制到min-max区间
+        # 输入张量限制到min-max区间,这步会把不相交的两个框框inter表示的wh计算成0
         inter   = torch.clamp((max_xy - min_xy), min=0)
-        inter   = inter[:, :, 0] * inter[:, :, 1]
+        inter   = inter[:, :, 0] * inter[:, :, 1] # 计算w*h面积 [A,B]维度,每个值表示相交矩阵部分的面积
         #-----------------------------------------------------------#
         #   计算预测框和真实框各自的面积
         #-----------------------------------------------------------#
@@ -238,11 +241,14 @@ class YOLOLoss(nn.Module):
         '''
 
         :param l: 第几个特征层
-        :param targets:目标 batchx 左上角xy和右下角xy(归一化) 置信度
+        :param targets:GT框,维度为[目标 batch , 左上角xy和右下角xy(归一化) 置信度]
         :param anchors: 缩放到特征图上后先验框的大小
         :param in_h:特征图高
         :param in_w:特征图宽
         :return:
+        y_true:32x3x13x13x25矩阵,最后的25维表示sigmoid(tx),sigmoid(ty),tw,th,有无目标,类别
+        noobj_mask:32x3x13x13 无目标为1,有目标为0
+        box_loss_scale:loss比例,大目标loss权重小，小目标loss权重大
         '''
         #-----------------------------------------------------#
         #   计算一共有多少张图片
@@ -251,7 +257,7 @@ class YOLOLoss(nn.Module):
         #-----------------------------------------------------#
         #   用于选取哪些先验框不包含物体
         #-----------------------------------------------------#
-        # len(self.anchors_mask[l]) 值为3 ,表示3个特征图
+        # len(self.anchors_mask[l]) 值为3 ,表示每个特征图中先验框个数
         noobj_mask      = torch.ones(bs, len(self.anchors_mask[l]), in_h, in_w, requires_grad = False)
         #-----------------------------------------------------#
         #   让网络更加去关注小目标
@@ -272,7 +278,7 @@ class YOLOLoss(nn.Module):
             #-------------------------------------------------------#
             # batch_target[:,[0,2]]等同于batch_target[...,[0,2]]
             # 把最后一个维度索引为0和2的索引抽出来,造成一个同维度的矩阵
-            # xw 和 yh 还有置信度,原先都是归一化的值,映射到特征图尺寸上
+            # x w 和 y h 还有置信度,原先都是归一化的值,映射到特征图尺寸上
             batch_target[:, [0,2]] = targets[b][:, [0,2]] * in_w
             batch_target[:, [1,3]] = targets[b][:, [1,3]] * in_h
             batch_target[:, 4] = targets[b][:, 4]
@@ -290,27 +296,28 @@ class YOLOLoss(nn.Module):
             #   将先验框转换一个形式
             #   9, 4
             #-------------------------------------------------------#
-            # anchors为9x2矩阵
+            # anchors为9x2矩阵 输出anchor_shapes为[9,4]
             anchor_shapes   = torch.FloatTensor(torch.cat((torch.zeros((len(anchors), 2)), torch.FloatTensor(anchors)), 1))
             #-------------------------------------------------------#
             #   计算交并比
             #   self.calculate_iou(gt_box, anchor_shapes) = [num_true_box, 9]每一个真实框和9个先验框的重合情况
-            #   best_ns:
-            #   [每个真实框最大的重合度max_iou, 每一个真实框最重合的先验框的序号]
+            #   因为先验框是没有位置的,只有宽高,并且这个位置不是计算最匹配的交并比的要素,我们计算最合适的先验框肯定是计算交并比最大的
+            #   所以传入的时候,gt框和anchor框的xy中心位置坐标都为0,因为不需要考虑,只找个交并比最大的框
             #-------------------------------------------------------#
             # torch.argmax(, dim=-1) 返回tensor最大值索引,dim=-1表示倒数第一个维度的索引,如果是二维,则是列索引
-            # 这里写错了,argmax会降维,返回的best_ns是 [每一个真实框最重合的先验框的序号]
+            # 这里写错了,argmax会降维,返回的best_ns是 [num_GT] 表示每一个真实框和最重合的先验框的序号
             best_ns = torch.argmax(self.calculate_iou(gt_box, anchor_shapes), dim=-1)
 
             for t, best_n in enumerate(best_ns):
                 if best_n not in self.anchors_mask[l]:
+                    # 如果交并比最大的框不是属于这张特征图的框框,,则退出,让下一张合适的特征图框框来预测
                     continue
                 #----------------------------------------#
                 #   判断这个先验框是当前特征点的哪一个先验框
                 #----------------------------------------#
                 k = self.anchors_mask[l].index(best_n)
                 #----------------------------------------#
-                #   获得真实框属于哪个网格点
+                #   获得真实框属于哪个网格点,也就是找到GT框对应的xy位置坐标
                 #----------------------------------------#
                 i = torch.floor(batch_target[t, 0]).long()
                 j = torch.floor(batch_target[t, 1]).long()
@@ -321,16 +328,16 @@ class YOLOLoss(nn.Module):
 
                 #----------------------------------------#
                 #   noobj_mask代表无目标的特征点
-                # 发现了目标设置为有目标
+                # 发现了目标设置为有目标,b表示batch,k表示l特征图的第几个先验框,j,i表示特征点y,x坐标
                 #----------------------------------------#
                 noobj_mask[b, k, j, i] = 0
                 #----------------------------------------#
                 #   tx、ty代表中心调整参数的真实值
                 #----------------------------------------#
-                y_true[b, k, j, i, 0] = batch_target[t, 0] - i.float()
+                y_true[b, k, j, i, 0] = batch_target[t, 0] - i.float() #求出对应sigmodi(x)值 ,距离x还有一层sigmoid函数还不是直接的x
                 y_true[b, k, j, i, 1] = batch_target[t, 1] - j.float()
-                y_true[b, k, j, i, 2] = math.log(batch_target[t, 2] / anchors[best_n][0])
-                y_true[b, k, j, i, 3] = math.log(batch_target[t, 3] / anchors[best_n][1])
+                y_true[b, k, j, i, 2] = math.log(batch_target[t, 2] / anchors[best_n][0]) # 求出tw值
+                y_true[b, k, j, i, 3] = math.log(batch_target[t, 3] / anchors[best_n][1]) # 求出th值
                 y_true[b, k, j, i, 4] = 1
                 y_true[b, k, j, i, c + 5] = 1
                 #----------------------------------------#
@@ -356,26 +363,27 @@ class YOLOLoss(nn.Module):
         grid_y = torch.linspace(0, in_h - 1, in_h).repeat(in_w, 1).t().repeat(
             int(bs * len(self.anchors_mask[l])), 1, 1).view(y.shape).type(FloatTensor)
 
-        # 生成先验框的宽高
+        # 生成先验框的宽高,只针对这张特征图的宽高
         scaled_anchors_l = np.array(scaled_anchors)[self.anchors_mask[l]]
         anchor_w = FloatTensor(scaled_anchors_l).index_select(1, LongTensor([0]))
         anchor_h = FloatTensor(scaled_anchors_l).index_select(1, LongTensor([1]))
-        
+        # 变成32x3x13x13维度的矩阵,3代表先验框个数
         anchor_w = anchor_w.repeat(bs, 1).repeat(1, 1, in_h * in_w).view(w.shape)
         anchor_h = anchor_h.repeat(bs, 1).repeat(1, 1, in_h * in_w).view(h.shape)
         #-------------------------------------------------------#
-        #   计算调整后的先验框中心与宽高
+        #   计算调整后的先验框中心与宽高,输入的x,y,w,h都是预测给出的值,x,y是经过了sigmoid的wh未经过exp
         #-------------------------------------------------------#
-        pred_boxes_x    = torch.unsqueeze(x.data + grid_x, -1)
+        pred_boxes_x    = torch.unsqueeze(x.data + grid_x, -1) # 变换后pred_boxes_x为[batch,3,13,13,1]
         pred_boxes_y    = torch.unsqueeze(y.data + grid_y, -1)
         pred_boxes_w    = torch.unsqueeze(torch.exp(w.data) * anchor_w, -1)
         pred_boxes_h    = torch.unsqueeze(torch.exp(h.data) * anchor_h, -1)
+        # 最后维度拼接,变成[batch,3,13,13,4]
         pred_boxes      = torch.cat([pred_boxes_x, pred_boxes_y, pred_boxes_w, pred_boxes_h], dim = -1)
         
         for b in range(bs):           
             #-------------------------------------------------------#
             #   将预测结果转换一个形式
-            #   pred_boxes_for_ignore      num_anchors, 4
+            #   pred_boxes_for_ignore      [num_anchors, 4]
             #-------------------------------------------------------#
             pred_boxes_for_ignore = pred_boxes[b].view(-1, 4)
             #-------------------------------------------------------#
@@ -391,16 +399,20 @@ class YOLOLoss(nn.Module):
                 batch_target[:, [1,3]] = targets[b][:, [1,3]] * in_h
                 batch_target = batch_target[:, :4]
                 #-------------------------------------------------------#
-                #   计算交并比
+                #   计算交并比 这里是拿实际在特征图上的坐标计算交并比,已经转换过batch_target为GT,pred_boxes_for_ignore为预测
                 #   anch_ious       num_true_box, num_anchors
                 #-------------------------------------------------------#
+                # 获得真实框和所有预测输出的框框(基于先验框调整)的iou
                 anch_ious = self.calculate_iou(batch_target, pred_boxes_for_ignore)
                 #-------------------------------------------------------#
                 #   每个先验框对应真实框的最大重合度
                 #   anch_ious_max   num_anchors
                 #-------------------------------------------------------#
+                # 获得每个先验框和哪个真实框iou最大, 获取最大的iou
                 anch_ious_max, _    = torch.max(anch_ious, dim = 0)
+                # 再转换成特征图的尺寸,如[3,13,13]
                 anch_ious_max       = anch_ious_max.view(pred_boxes[b].size()[:3])
+                # noobj_mask:[batch,3,13,13],iou大于阈值的设置为0,有目标
                 noobj_mask[b][anch_ious_max > self.ignore_threshold] = 0
         return noobj_mask
 
