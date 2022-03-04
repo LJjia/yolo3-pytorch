@@ -145,7 +145,8 @@ class YOLOLoss(nn.Module):
         #   如果重合程度过大则忽略，因为这些特征点属于预测比较准确的特征点
         #   作为负样本不合适
         #----------------------------------------------------------------#
-        # 交并比阈值大于0.5的都认为是有目标的
+        # 交并比阈值大于0.5的都认为是有目标的,这里很奇特的是相当于将交并比大于0.5阈值的也认为有目标
+        # 这样之后计算loss_conf置信度损失的时候就会把对应的anchor目标忽略
         noobj_mask = self.get_ignore(l, x, y, h, w, targets, scaled_anchors, in_h, in_w, noobj_mask)
 
         if self.cuda:
@@ -172,8 +173,11 @@ class YOLOLoss(nn.Module):
         loss_w = torch.sum(self.MSELoss(w, y_true[..., 2]) * 0.5 * box_loss_scale * y_true[..., 4])
         loss_h = torch.sum(self.MSELoss(h, y_true[..., 3]) * 0.5 * box_loss_scale * y_true[..., 4])
         #-----------------------------------------------------------#
-        #   计算置信度的loss,这个loss为:GT框个数*BCE+iou大于0.5的anchor数量*BCE
+        #   计算置信度的loss,
         #-----------------------------------------------------------#
+        # 注意,这里的损失为这个loss为:GT框个数*BCE
+        # iou小于的anchor*BCE
+        # 因此,如果网络误判了,也就是多预测目标, 这里的损失可以控制网络防止误判
         loss_conf   = torch.sum(self.BCELoss(conf, y_true[..., 4]) * y_true[..., 4]) + \
                       torch.sum(self.BCELoss(conf, y_true[..., 4]) * noobj_mask)
         # 同样,也是只有GT框所对应的anchor才会计算分类损失
@@ -402,13 +406,13 @@ class YOLOLoss(nn.Module):
                 #   计算交并比 这里是拿实际在特征图上的坐标计算交并比,已经转换过batch_target为GT,pred_boxes_for_ignore为预测
                 #   anch_ious       num_true_box, num_anchors
                 #-------------------------------------------------------#
-                # 获得真实框和所有预测输出的框框(基于先验框调整)的iou
+                # 获得真实框和所有预测输出的框框(基于先验框调整)的iou,例如GT框有8个,特征图大小13x13,则此时anch_ious为[8,507]
                 anch_ious = self.calculate_iou(batch_target, pred_boxes_for_ignore)
                 #-------------------------------------------------------#
                 #   每个先验框对应真实框的最大重合度
                 #   anch_ious_max   num_anchors
                 #-------------------------------------------------------#
-                # 获得每个先验框和哪个真实框iou最大, 获取最大的iou
+                # 获得每个先验框和哪个真实框iou最大, 获取最大的iou,注意是每个先验框和所有真实框的交并比最大值,输出维度[507]
                 anch_ious_max, _    = torch.max(anch_ious, dim = 0)
                 # 再转换成特征图的尺寸,如[3,13,13]
                 anch_ious_max       = anch_ious_max.view(pred_boxes[b].size()[:3])
