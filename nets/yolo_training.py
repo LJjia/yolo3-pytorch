@@ -137,7 +137,9 @@ class YOLOLoss(nn.Module):
         #-----------------------------------------------#
         y_true, noobj_mask, box_loss_scale = self.get_target(l, targets, scaled_anchors, in_h, in_w)
         # y_true尺度 8x3x13x13x25 表示真实框的预测结果,xy外面有sigmoid
+        # 请注意,y_true中每个GT框只会对应唯一一个交并比最大的anchor先验框,
         # noobjmask 8x3x13x13 表示特征图上哪个框没有对应预测目标,为1为没有,0为发现目标
+        # 此时的noobjmask也是每个GT框只对应唯一一个交并比最大的anchor先验框
         # box_loss_scale 8x3x13x13 表示大目标loss权重小，小目标loss权重大,暂时不清楚
 
         #---------------------------------------------------------------#
@@ -175,8 +177,8 @@ class YOLOLoss(nn.Module):
         #-----------------------------------------------------------#
         #   计算置信度的loss,
         #-----------------------------------------------------------#
-        # 注意,这里的损失为这个loss为:GT框个数*BCE
-        # iou小于的anchor*BCE
+        # 注意,这里的损失为这个loss为:GT框个数*BCE+
+        # iou小于阈值的anchor*BCE
         # 因此,如果网络误判了,也就是多预测目标, 这里的损失可以控制网络防止误判
         loss_conf   = torch.sum(self.BCELoss(conf, y_true[..., 4]) * y_true[..., 4]) + \
                       torch.sum(self.BCELoss(conf, y_true[..., 4]) * noobj_mask)
@@ -287,7 +289,6 @@ class YOLOLoss(nn.Module):
             batch_target[:, [1,3]] = targets[b][:, [1,3]] * in_h
             batch_target[:, 4] = targets[b][:, 4]
             batch_target = batch_target.cpu()
-            # TODO:这里维度需要打印清楚看看到底是做什么
             #-------------------------------------------------------#
             #   将真实框转换一个形式
             #   num_true_box, 4
@@ -377,7 +378,8 @@ class YOLOLoss(nn.Module):
         #-------------------------------------------------------#
         #   计算调整后的先验框中心与宽高,输入的x,y,w,h都是预测给出的值,x,y是经过了sigmoid的wh未经过exp
         #-------------------------------------------------------#
-        pred_boxes_x    = torch.unsqueeze(x.data + grid_x, -1) # 变换后pred_boxes_x为[batch,3,13,13,1]
+        pred_boxes_x    = torch.unsqueeze(x.data + grid_x, -1)
+        # 变换后pred_boxes_x为[batch,3,13,13,1],3为每个特征图先验框的个数
         pred_boxes_y    = torch.unsqueeze(y.data + grid_y, -1)
         pred_boxes_w    = torch.unsqueeze(torch.exp(w.data) * anchor_w, -1)
         pred_boxes_h    = torch.unsqueeze(torch.exp(h.data) * anchor_h, -1)
